@@ -1,0 +1,45 @@
+name: Run TREC AutoJudge Health Checks
+
+on:
+  schedule:
+    - cron: '0 6,20 * * *'
+
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  health: 
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Set up Dependencies
+        uses: actions/setup-python@v4
+
+      - name: Install TIRA Client
+        run: |
+          pip3 install 'git+https://github.com/tira-io/tira.git@dynamic-run-upload-fields#subdirectory=python-client'
+          pip3 install click
+
+      - name: Run Health
+        run: |
+          ./auto-judge-health-check.py data/health-monitoring.jsonl
+
+      - name: Commit Changes
+        run: |
+          git config --global user.name "github-action-bot"
+          git config --global user.email "github-action-bot@github.com"
+          git add data/health-monitoring.jsonl
+          git commit -m "Github CI Run AutoJudge health checks"
+          git push
+

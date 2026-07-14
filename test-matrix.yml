@@ -1,0 +1,15 @@
+judges:
+  webis/tinyjudge:
+    executions:
+      -
+        dataset: kiddie-20260605-training
+        llm-prompt:
+          name: openai/gpt-oss-20b
+          run_id: 2026-07-11-11-09-40
+
+      -
+        dataset: kiddie-20260605-training
+        llm-prompt:
+          name: Qwen/Qwen2.5-7B-Instruct
+          run_id: 2026-07-11-08-34-38
+          
