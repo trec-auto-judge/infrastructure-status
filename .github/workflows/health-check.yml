@@ -7,6 +7,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -43,3 +44,7 @@ jobs:
           git commit -m "Github CI Run AutoJudge health checks"
           git push
 
+      - name: Trigger Status Page Render
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run render-status-page.yml --ref "${GITHUB_REF_NAME}"
