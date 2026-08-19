@@ -52,6 +52,31 @@ def verify_minima_llm_prompt_cache(database_path):
         }
 
 
+def verify_langchain_llm_prompt_cache(database_path):
+    database_path = Path(database_path)
+    with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True) as connection:
+        return {
+            "file_name": database_path.name,
+            "size": database_path.stat().st_size,
+            "responses": connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM (
+                    SELECT prompt, llm, idx, response
+                    FROM full_llm_cache
+                    WHERE prompt IS NOT NULL
+                      AND response IS NOT NULL
+                    UNION
+                    SELECT prompt, llm, idx, response
+                    FROM full_md5_llm_cache
+                    WHERE prompt IS NOT NULL
+                      AND response IS NOT NULL
+                )
+                """
+            ).fetchone()[0],
+        }
+
+
 def prompt_cache_test(judge, llm_prompt, dataset, prompt_cache_dir):
     ret = {"judge": judge, "llm_prompt": llm_prompt, "dataset_id": dataset}
 
@@ -60,6 +85,10 @@ def prompt_cache_test(judge, llm_prompt, dataset, prompt_cache_dir):
         cache_result = verify_lite_llm_prompt_cache(Path(cache_dir) / "llm_cache.sqlite")
     elif (Path(cache_dir) / "minima_llm.db").is_file():
         cache_result = verify_minima_llm_prompt_cache(Path(cache_dir) / "minima_llm.db")
+    elif (Path(cache_dir) / "langchain_cache.db").is_file():
+        cache_result = verify_langchain_llm_prompt_cache(
+            Path(cache_dir) / "langchain_cache.db"
+        )
     else:
         raise ValueError("No matching llm-cache backend found")
 

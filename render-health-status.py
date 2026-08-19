@@ -71,6 +71,27 @@ def test_name(judge, execution):
     )
 
 
+def nugget_bank_test_name(method, judge, execution):
+    return (
+        f"nugget-bank-test-{method}-{judge}-{execution['dataset']}-"
+        f"{execution['llm-prompt']['name']}"
+    )
+
+
+def prompt_cache_download_test_name(judge, execution):
+    return (
+        f"download-prompt-cache-{judge}-{execution['dataset']}-"
+        f"{execution['llm-prompt']['name']}"
+    )
+
+
+def prompt_cache_verify_test_name(judge, execution):
+    return (
+        f"verify-prompt-cache-{judge}-{execution['dataset']}-"
+        f"{execution['llm-prompt']['name']}"
+    )
+
+
 def configured_rows(matrix):
     rows = []
     for judge, configuration in matrix["judges"].items():
@@ -92,6 +113,54 @@ def configured_rows(matrix):
                     "test_name": test_name(judge, execution),
                 }
             )
+    return rows
+
+
+def configured_prompt_cache_rows(matrix):
+    rows = []
+    for judge, configuration in matrix["judges"].items():
+        for execution in configuration.get("executions", []):
+            rows.append(
+                {
+                    "judge": judge,
+                    "llm": execution["llm-prompt"]["name"],
+                    "dataset": execution["dataset"],
+                    "download_test_name": prompt_cache_download_test_name(
+                        judge, execution
+                    ),
+                    "verify_test_name": prompt_cache_verify_test_name(
+                        judge, execution
+                    ),
+                }
+            )
+    return rows
+
+
+def configured_nugget_bank_rows(matrix):
+    nugget_bank_config = matrix.get("nugget-banks", {})
+    methods = nugget_bank_config.get("tests-methods", [])
+    judges = nugget_bank_config.get("to-verify", [])
+    rows = []
+
+    for judge in judges:
+        if judge not in matrix["judges"]:
+            raise ValueError(
+                f"Nugget-bank configuration references unknown judge {judge!r}"
+            )
+        for execution in matrix["judges"][judge].get("executions", []):
+            for method in methods:
+                rows.append(
+                    {
+                        "judge": judge,
+                        "llm": execution["llm-prompt"]["name"],
+                        "dataset": execution["dataset"],
+                        "method": method,
+                        "test_name": nugget_bank_test_name(
+                            method, judge, execution
+                        ),
+                    }
+                )
+
     return rows
 
 
@@ -179,6 +248,96 @@ def result_cell(record, majority_kendall, majority_tauap):
     )
 
 
+def format_runtime(value):
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    if value < 1:
+        return f"{value * 1000:.1f} ms"
+    return f"{value:.1f} s"
+
+
+def format_size(value):
+    if not isinstance(value, (int, float)) or value < 0:
+        return "n/a"
+
+    units = ("B", "KiB", "MiB", "GiB")
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            precision = 0 if unit == "B" else 1
+            return f"{size:.{precision}f} {unit}"
+        size /= 1024
+
+
+def nugget_bank_result_cell(record):
+    if record is None:
+        return '<td class="missing" title="No result recorded">—</td>'
+    if record.get("status") == "failed":
+        return '<td class="failed">Failed</td>'
+
+    evaluation = record.get("evaluation")
+    if not isinstance(evaluation, dict):
+        return '<td class="failed">No evaluation</td>'
+
+    kendall = score_range(evaluation, "Min (Kendall)", "Max (Kendall)")
+    tauap = score_range(evaluation, "Min (Tauap B)", "Max (Tauap B)")
+    return (
+        "<td>"
+        '<span class="passed"><strong>Passed</strong></span>'
+        f"<span><strong>Kendall:</strong> {html.escape(format_range(kendall))}</span>"
+        f"<span><strong>TauAP-B:</strong> {html.escape(format_range(tauap))}</span>"
+        f"<span><strong>Runtime:</strong> "
+        f"{html.escape(format_runtime(record.get('time')))}</span>"
+        "</td>"
+    )
+
+
+def prompt_cache_result_cell(download_record, verify_record):
+    if download_record is None and verify_record is None:
+        return '<td class="missing" title="No result recorded">—</td>'
+
+    if (
+        download_record is None
+        or verify_record is None
+        or download_record.get("status") == "failed"
+        or verify_record.get("status") == "failed"
+    ):
+        missing_steps = []
+        if download_record is None or download_record.get("status") == "failed":
+            missing_steps.append("download")
+        if verify_record is None or verify_record.get("status") == "failed":
+            missing_steps.append("verification")
+        return (
+            '<td class="failed"><span><strong>Failed</strong></span>'
+            f"<span>{html.escape(', '.join(missing_steps).capitalize())}</span></td>"
+        )
+
+    responses = verify_record.get("responses")
+    file_name = verify_record.get("file_name")
+    if (
+        not isinstance(responses, int)
+        or responses < 1
+        or not isinstance(file_name, str)
+        or not file_name
+    ):
+        return '<td class="failed">Invalid or empty cache</td>'
+
+    return (
+        "<td>"
+        '<span class="passed"><strong>Passed</strong></span>'
+        f"<span><strong>Backend:</strong> {html.escape(file_name)}</span>"
+        f"<span><strong>Cached responses:</strong> {responses}</span>"
+        f"<span><strong>Database size:</strong> "
+        f"{html.escape(format_size(verify_record.get('size')))}</span>"
+        f"<span><strong>Download size:</strong> "
+        f"{html.escape(format_size(download_record.get('size')))}</span>"
+        f"<span><strong>Runtime:</strong> download "
+        f"{html.escape(format_runtime(download_record.get('time')))}, verify "
+        f"{html.escape(format_runtime(verify_record.get('time')))}</span>"
+        "</td>"
+    )
+
+
 def render_results_table(rows, history, timestamps):
     timestamp_headers = "".join(
         f"<th scope=\"col\">{html.escape(format_timestamp(timestamp))}</th>"
@@ -243,17 +402,163 @@ def render_results_table(rows, history, timestamps):
     """
 
 
+def render_prompt_cache_table(
+    rows, download_history, verify_history, timestamps
+):
+    timestamp_headers = "".join(
+        f'<th scope="col">{html.escape(format_timestamp(timestamp))}</th>'
+        for timestamp in timestamps
+    )
+    if not timestamps:
+        timestamp_headers = '<th scope="col">No health checks recorded</th>'
+
+    rows_by_judge = defaultdict(list)
+    for row in rows:
+        rows_by_judge[row["judge"]].append(row)
+
+    body = []
+    for judge, judge_rows in rows_by_judge.items():
+        for row_index, row in enumerate(judge_rows):
+            cells = ["<tr>"]
+            if row_index == 0:
+                cells.append(
+                    f'<th class="software-column" scope="rowgroup" '
+                    f'rowspan="{len(judge_rows)}">'
+                    f"{html.escape(judge)}</th>"
+                )
+            cells.append(
+                f'<th class="llm-column" scope="row">{html.escape(row["llm"])}</th>'
+            )
+            if timestamps:
+                cells.extend(
+                    prompt_cache_result_cell(
+                        download_history[row["download_test_name"]].get(timestamp),
+                        verify_history[row["verify_test_name"]].get(timestamp),
+                    )
+                    for timestamp in timestamps
+                )
+            else:
+                cells.append('<td class="missing">—</td>')
+            cells.append("</tr>")
+            body.append("".join(cells))
+
+    return f"""
+      <div class="table-wrap" tabindex="0" aria-label="Prompt-cache verification over time">
+        <table>
+          <thead>
+            <tr>
+              <th class="software-column" scope="col">Software</th>
+              <th class="llm-column" scope="col">LLM</th>
+              {timestamp_headers}
+            </tr>
+          </thead>
+          <tbody>
+            {''.join(body)}
+          </tbody>
+        </table>
+      </div>
+    """
+
+
+def render_nugget_bank_table(rows, history, timestamps):
+    timestamp_headers = "".join(
+        f'<th scope="col">{html.escape(format_timestamp(timestamp))}</th>'
+        for timestamp in timestamps
+    )
+    if not timestamps:
+        timestamp_headers = '<th scope="col">No health checks recorded</th>'
+
+    rows_by_judge = defaultdict(list)
+    for row in rows:
+        rows_by_judge[row["judge"]].append(row)
+
+    body = []
+    for judge, judge_rows in rows_by_judge.items():
+        for row_index, row in enumerate(judge_rows):
+            cells = ["<tr>"]
+            if row_index == 0:
+                cells.append(
+                    f'<th class="software-column" scope="rowgroup" '
+                    f'rowspan="{len(judge_rows)}">'
+                    f"{html.escape(judge)}</th>"
+                )
+            cells.append(
+                f'<th class="llm-column" scope="row">{html.escape(row["llm"])}</th>'
+            )
+            cells.append(
+                f'<th class="method-column" scope="row">'
+                f"{html.escape(row['method'])}</th>"
+            )
+            if timestamps:
+                cells.extend(
+                    nugget_bank_result_cell(
+                        history[row["test_name"]].get(timestamp)
+                    )
+                    for timestamp in timestamps
+                )
+            else:
+                cells.append('<td class="missing">—</td>')
+            cells.append("</tr>")
+            body.append("".join(cells))
+
+    return f"""
+      <div class="table-wrap nugget-bank-table" tabindex="0" aria-label="Nugget-bank verification over time">
+        <table>
+          <thead>
+            <tr>
+              <th class="software-column" scope="col">Nugget-bank software</th>
+              <th class="llm-column" scope="col">LLM</th>
+              <th class="method-column" scope="col">Verification method</th>
+              {timestamp_headers}
+            </tr>
+          </thead>
+          <tbody>
+            {''.join(body)}
+          </tbody>
+        </table>
+      </div>
+    """
+
+
 def render_page(matrix, records):
     rows = configured_rows(matrix)
     history, timestamps = health_history(
         records, {row["test_name"] for row in rows}
     )
     results_table = render_results_table(rows, history, timestamps)
+    nugget_bank_rows = configured_nugget_bank_rows(matrix)
+    nugget_bank_history, nugget_bank_timestamps = health_history(
+        records, {row["test_name"] for row in nugget_bank_rows}
+    )
+    nugget_bank_table = render_nugget_bank_table(
+        nugget_bank_rows, nugget_bank_history, nugget_bank_timestamps
+    )
+    prompt_cache_rows = configured_prompt_cache_rows(matrix)
+    prompt_cache_download_history, prompt_cache_download_timestamps = health_history(
+        records, {row["download_test_name"] for row in prompt_cache_rows}
+    )
+    prompt_cache_verify_history, prompt_cache_verify_timestamps = health_history(
+        records, {row["verify_test_name"] for row in prompt_cache_rows}
+    )
+    prompt_cache_timestamps = sorted(
+        set(prompt_cache_download_timestamps) | set(prompt_cache_verify_timestamps)
+    )
+    prompt_cache_table = render_prompt_cache_table(
+        prompt_cache_rows,
+        prompt_cache_download_history,
+        prompt_cache_verify_history,
+        prompt_cache_timestamps,
+    )
     datasets = list(dict.fromkeys(row["dataset"] for row in rows))
     dataset_names = ", ".join(f"<code>{html.escape(dataset)}</code>" for dataset in datasets)
     dataset_label = "dataset" if len(datasets) == 1 else "datasets"
+    all_timestamps = (
+        timestamps + nugget_bank_timestamps + prompt_cache_timestamps
+    )
     generated_at = (
-        format_timestamp(max(timestamps)) if timestamps else "No health checks recorded"
+        format_timestamp(max(all_timestamps))
+        if all_timestamps
+        else "No health checks recorded"
     )
 
     return f"""<!doctype html>
@@ -283,6 +588,7 @@ def render_page(matrix, records):
     }}
     .table-wrap {{
       --software-column-width: 16rem;
+      --llm-column-width: 15rem;
       position: relative;
       overflow-x: auto;
       max-width: 100%;
@@ -309,7 +615,7 @@ def render_page(matrix, records):
     thead th {{
       background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
     }}
-    .software-column, .llm-column {{
+    .software-column, .llm-column, .method-column {{
       position: -webkit-sticky;
       position: sticky;
       background: Canvas;
@@ -331,7 +637,14 @@ def render_page(matrix, records):
       max-width: 15rem;
       z-index: 2;
     }}
-    thead .software-column, thead .llm-column {{
+    .method-column {{
+      left: calc(var(--software-column-width) + var(--llm-column-width));
+      width: 17rem;
+      min-width: 17rem;
+      max-width: 17rem;
+      z-index: 2;
+    }}
+    thead .software-column, thead .llm-column, thead .method-column {{
       background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
       z-index: 3;
     }}
@@ -344,6 +657,9 @@ def render_page(matrix, records):
     .failed {{
       color: #cf222e;
       font-weight: 700;
+    }}
+    .passed {{
+      color: #1a7f37;
     }}
     .majority {{
       color: #1a7f37;
@@ -390,12 +706,24 @@ def render_page(matrix, records):
 
     <section>
       <h2>Status: Nugget Banks</h2>
-      <p class="in-progress">Automated health checks for nugget banks are in progress.</p>
+      <p>
+        Each configured nugget bank is exercised through its verification
+        method. A green status means the test completed and produced an
+        evaluation; effectiveness scores are reported without applying an
+        arbitrary pass threshold.
+      </p>
+      {nugget_bank_table}
     </section>
 
     <section>
       <h2>Status: Prompt Caches</h2>
-      <p class="in-progress">Automated health checks for prompt caches are in progress.</p>
+      <p>
+        A green status means the archived run downloaded successfully and its
+        prompt-cache database could be opened with at least one complete cached
+        response. Response counts and file sizes are informational and do not
+        use an arbitrary pass threshold.
+      </p>
+      {prompt_cache_table}
     </section>
   </main>
   <script>
@@ -406,6 +734,13 @@ def render_page(matrix, records):
           container.style.setProperty(
             "--software-column-width",
             `${{softwareColumn.getBoundingClientRect().width}}px`,
+          );
+        }}
+        const llmColumn = container.querySelector("thead .llm-column");
+        if (llmColumn) {{
+          container.style.setProperty(
+            "--llm-column-width",
+            `${{llmColumn.getBoundingClientRect().width}}px`,
           );
         }}
         container.scrollLeft = container.scrollWidth - container.clientWidth;
