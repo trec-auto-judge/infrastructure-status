@@ -8,6 +8,7 @@ from functools import partial
 from tqdm import tqdm
 from pathlib import Path
 import json
+import sqlite3
 import yaml
 import tempfile
 import zipfile
@@ -15,6 +16,55 @@ import shutil
 from os import environ
 from subprocess import check_output
 from tira.io_utils import parse_prototext_key_values
+
+
+def verify_lite_llm_prompt_cache(database_path):
+    database_path = Path(database_path)
+    with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True) as connection:
+        return {
+            "file_name": database_path.name,
+            "size": database_path.stat().st_size,
+            "responses": connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM chat_completions_cache
+                WHERE request_json IS NOT NULL
+                  AND response_json IS NOT NULL
+                """
+            ).fetchone()[0],
+        }
+
+
+def verify_minima_llm_prompt_cache(database_path):
+    database_path = Path(database_path)
+    with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True) as connection:
+        return {
+            "file_name": database_path.name,
+            "size": database_path.stat().st_size,
+            "responses": connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM cache
+                WHERE key IS NOT NULL
+                  AND response_text IS NOT NULL
+                """
+            ).fetchone()[0],
+        }
+
+
+def prompt_cache_test(judge, llm_prompt, dataset, prompt_cache_dir):
+    ret = {"judge": judge, "llm_prompt": llm_prompt, "dataset_id": dataset}
+
+    cache_dir = prompt_cache_dir + "/" + llm_prompt["run_id"] + "/CACHE_DIR"
+    if (Path(cache_dir) / "llm_cache.sqlite").is_file():
+        cache_result = verify_lite_llm_prompt_cache(Path(cache_dir) / "llm_cache.sqlite")
+    elif (Path(cache_dir) / "minima_llm.db").is_file():
+        cache_result = verify_minima_llm_prompt_cache(Path(cache_dir) / "minima_llm.db")
+    else:
+        raise ValueError("No matching llm-cache backend found")
+
+    ret.update(cache_result)
+    return ret
 
 
 def track_execution(func, retries=3, timeout=300):
@@ -152,6 +202,42 @@ def run_auto_judge_test(judge, llm_prompt, dataset, prompt_cache_dir):
     return ret
 
 
+def run_nugget_bank_test(nugget_bank_test, nugget_bank_approach, execution, prompt_cache_dir):
+    nugget_bank_dir = (
+        Path(prompt_cache_dir) / execution["llm-prompt"]["run_id"] / "output"
+    )
+    if not list(nugget_bank_dir.glob("*.nuggets.jsonl")):
+        raise FileNotFoundError(f"No nugget bank found in {nugget_bank_dir}")
+
+    cmd = [
+        "tira-cli",
+        "run",
+        "local",
+        "--approach",
+        "trec-auto-judge/" + nugget_bank_test,
+        "--input",
+        execution["dataset"],
+        "--mount-directory",
+        f"NUGGETS={nugget_bank_dir}",
+    ]
+    results = check_output(cmd)
+    out_dir = results.decode("UTF-8").split("Full evaluation results: ")[1].split("\n")[0]
+    ret = {
+        "nugget_bank_test": nugget_bank_test,
+        "judge": nugget_bank_approach,
+        "llm_prompt": execution["llm-prompt"],
+        "dataset_id": execution["dataset"],
+    }
+
+    eval_file = Path(out_dir) / "evaluation.prototext"
+    ret["evaluation"] = {
+        measure["key"]: measure["value"]
+        for measure in parse_prototext_key_values(eval_file)
+    }
+
+    return ret
+
+
 def populate_run_auto_judge_tests(run_dir):
     for judge_name, judge in load_test_matrix()["judges"].items():
         for e in judge["executions"]:
@@ -165,6 +251,41 @@ def populate_run_auto_judge_tests(run_dir):
             )
             ALL_TESTS[test_name] = test_execution
 
+
+def populate_run_prompt_cache_tests(run_dir):
+    for judge_name, judge in load_test_matrix()["judges"].items():
+        for e in judge["executions"]:
+            test_name = f"verify-prompt-cache-{judge_name}-{e['dataset']}-{e['llm-prompt']['name']}"
+            test_execution = partial(
+                prompt_cache_test,
+                judge_name,
+                e["llm-prompt"],
+                e["dataset"],
+                run_dir
+            )
+            ALL_TESTS[test_name] = test_execution
+
+
+def populate_run_nugget_bank_tests(run_dir):
+    test_matrix = load_test_matrix()
+    judge_to_executions = {}
+    for judge_name, judge in load_test_matrix()["judges"].items():
+        judge_to_executions[judge_name] = judge["executions"]
+
+    for nugget_bank_test in test_matrix["nugget-banks"]["tests-methods"]:
+        for to_verify in test_matrix["nugget-banks"]["to-verify"]:
+            for e in judge_to_executions[to_verify]:
+                test_name = f"nugget-bank-test-{nugget_bank_test}-{to_verify}-{e['dataset']}-{e['llm-prompt']['name']}"
+                test_execution = partial(
+                    run_nugget_bank_test,
+                    nugget_bank_test,
+                    to_verify,
+                    e,
+                    run_dir
+                )
+                ALL_TESTS[test_name] = test_execution
+
+
 @click.command()
 @click.argument("output_file")
 def main(output_file):
@@ -175,12 +296,15 @@ def main(output_file):
     prompt_cache_dir = tempfile.mkdtemp()
     populate_download_run_tests(prompt_cache_dir)
     populate_run_auto_judge_tests(prompt_cache_dir)
+    populate_run_prompt_cache_tests(prompt_cache_dir)
+    populate_run_nugget_bank_tests(prompt_cache_dir)
     
     for test_name, test in tqdm(ALL_TESTS.items()):
         try:
             result = track_execution(test)
         except:
             result = {"status": "failed"}
+
         result["name"] = test_name
         result["timestamp"] = current_iso
         ret.append(result)

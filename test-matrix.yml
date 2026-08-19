@@ -97,3 +97,13 @@ judges:
           name: Qwen/Qwen2.5-7B-Instruct
           run_id: 2026-07-13-06-23-16
 
+nugget-banks:
+  tests-methods:
+    - webis/pyterrier-nugget-retrieval
+  to-verify:
+    - trema-unh/prefnugget-queryonly-best-updated
+    - trema-unh/langchain-pref-best-decide-plum
+    - trema-unh/prefnugget-best-decide-plum
+    - trema-unh/prefnugget-grounded-best
+    - trema-unh/prefnugget-queryonly-best
+    - trema-unh/prefnugget-queryonly
