@@ -90,6 +90,8 @@ def track_execution(func, retries=3, timeout=300):
         finally:
             pass
 
+    return {"status": "failed", "last-exception": str(last_exception)}
+
 
 def download_run(team, run_id, dataset_id, result_dir):
     url = f"https://www.tira.io/task/trec-auto-judge/user/{team}/dataset/{dataset_id}/download/{run_id}.zip"
