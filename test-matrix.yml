@@ -1,5 +1,5 @@
 judges:
-  webis/tinyjudge:
+  webis/webis-tinyjudge:
     executions:
       -
         dataset: kiddie-20260605-training
@@ -13,7 +13,7 @@ judges:
           name: Qwen/Qwen2.5-7B-Instruct
           run_id: 2026-07-11-08-34-38
 
-  trema-unh/prefnugget-queryonly:
+  trema-unh/prefnugget-query:
     executions:
       -
         dataset: kiddie-20260605-training
